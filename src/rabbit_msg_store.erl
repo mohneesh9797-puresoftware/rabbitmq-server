@@ -1254,7 +1254,9 @@ read_message1(From, #msg_location { msg_id = MsgId, file = File,
 
 read_from_disk(#msg_location { msg_id = MsgId, file = File, offset = Offset,
                                total_size = TotalSize }, State) ->
+    io:format(?MODULE_STRING ++ ":read_from_disk", []),
     {Hdl, State1} = get_read_handle(File, State),
+    io:format("\tHdl: ~p~n", [Hdl]),
     {ok, Offset} = file_handle_cache:position(Hdl, Offset),
     {ok, {MsgId, Msg}} =
         case rabbit_msg_file:read(Hdl, TotalSize) of
@@ -1494,8 +1496,10 @@ get_read_handle(FileNum, State = #msstate { file_handle_cache = FHC,
 
 get_read_handle(FileNum, FHC, Dir) ->
     case maps:find(FileNum, FHC) of
-        {ok, Hdl} -> {Hdl, FHC};
-        error     -> {ok, Hdl} = open_file(Dir, filenum_to_name(FileNum),
+        {ok, Hdl} -> io:format(?MODULE_STRING ++ " internal cache hit ~p~n", [FileNum]),
+                     {Hdl, FHC};
+        error     -> io:format(?MODULE_STRING ++ " internal cache miss ~p~n", [FileNum]),
+                     {ok, Hdl} = open_file(Dir, filenum_to_name(FileNum),
                                            ?READ_MODE),
                      {Hdl, maps:put(FileNum, Hdl, FHC)}
     end.
