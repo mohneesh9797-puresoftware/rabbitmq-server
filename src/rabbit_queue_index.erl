@@ -662,7 +662,7 @@ recover_segment(ContainsCheckFun, CleanShutdown,
     {SegEntries, UnackedCount} = load_segment(false, Segment),
     {SegEntries1, UnackedCountDelta} =
         segment_plus_journal(SegEntries, JEntries),
-    maps:fold(
+    array:sparse_foldl(
       fun (RelSeq, {{IsPersistent, Bin, MsgBin}, Del, no_ack},
            {SegmentAndDirtyCount, Bytes}) ->
               {MsgOrId, MsgProps} = parse_pub_record_body(Bin, MsgBin),
@@ -736,7 +736,7 @@ scan_queue_segments(Fun, Acc, VHostDir, QueueName) ->
         recover_journal(blank_state(VHostDir, QueueName)),
     Result = lists:foldr(
       fun (Seg, AccN) ->
-              segment_entries_fold(
+              segment_entries_foldr(
                 fun (RelSeq, {{MsgOrId, MsgProps, IsPersistent},
                               IsDelivered, IsAcked}, AccM) ->
                         Fun(reconstruct_seq_id(Seg, RelSeq), MsgOrId, MsgProps,
@@ -1086,7 +1086,7 @@ entry_to_segment(RelSeq, {Pub, Del, Ack}, Initial) ->
 read_bounded_segment(Seg, {StartSeg, StartRelSeq}, {EndSeg, EndRelSeq},
                      {Messages, Segments}, Dir) ->
     Segment = segment_find_or_new(Seg, Dir, Segments),
-    {segment_entries_fold(
+    {segment_entries_foldr(
        fun (RelSeq, {{MsgOrId, MsgProps, IsPersistent}, IsDelivered, no_ack},
             Acc)
              when (Seg > StartSeg orelse StartRelSeq =< RelSeq) andalso
@@ -1098,11 +1098,11 @@ read_bounded_segment(Seg, {StartSeg, StartRelSeq}, {EndSeg, EndRelSeq},
        end, Messages, Segment),
      segment_store(Segment, Segments)}.
 
-segment_entries_fold(Fun, Init,
-                     Segment = #segment { journal_entries = JEntries }) ->
+segment_entries_foldr(Fun, Init,
+                      Segment = #segment { journal_entries = JEntries }) ->
     {SegEntries, _UnackedCount} = load_segment(false, Segment),
     {SegEntries1, _UnackedCountD} = segment_plus_journal(SegEntries, JEntries),
-    maps:fold(
+    array:sparse_foldr(
       fun (RelSeq, {{IsPersistent, Bin, MsgBin}, Del, Ack}, Acc) ->
               {MsgOrId, MsgProps} = parse_pub_record_body(Bin, MsgBin),
               Fun(RelSeq, {{MsgOrId, MsgProps, IsPersistent}, Del, Ack}, Acc)
@@ -1112,7 +1112,7 @@ segment_entries_fold(Fun, Init,
 %%
 %% Does not do any combining with the journal at all.
 load_segment(KeepAcked, #segment { path = Path }) ->
-    Empty = {maps:new(), 0},
+    Empty = {array_new(), 0},
     case rabbit_file:is_file(Path) of
         false -> Empty;
         true  -> Size = rabbit_file:file_size(Path),
@@ -1144,19 +1144,19 @@ parse_segment_publish_entry(<<Bin:?PUB_RECORD_BODY_BYTES/binary,
                             IsPersistent, RelSeq, KeepAcked,
                             {SegEntries, Unacked}) ->
     Obj = {{IsPersistent, Bin, MsgBin}, no_del, no_ack},
-    SegEntries1 = maps:put(RelSeq, Obj, SegEntries),
+    SegEntries1 = array:set(RelSeq, Obj, SegEntries),
     parse_segment_entries(Rest, KeepAcked, {SegEntries1, Unacked + 1});
 parse_segment_publish_entry(Rest, _IsPersistent, _RelSeq, KeepAcked, Acc) ->
     parse_segment_entries(Rest, KeepAcked, Acc).
 
 add_segment_relseq_entry(KeepAcked, RelSeq, {SegEntries, Unacked}) ->
-    case maps:get(RelSeq, SegEntries) of
+    case array:get(RelSeq, SegEntries) of
         {Pub, no_del, no_ack} ->
-            {maps:update(RelSeq, {Pub, del, no_ack}, SegEntries), Unacked};
+            {array:set(RelSeq, {Pub, del, no_ack}, SegEntries), Unacked};
         {Pub, del, no_ack} when KeepAcked ->
-            {maps:update(RelSeq, {Pub, del, ack},    SegEntries), Unacked - 1};
+            {array:set(RelSeq, {Pub, del, ack},    SegEntries), Unacked - 1};
         {_Pub, del, no_ack} ->
-            {maps:remove(RelSeq,                     SegEntries), Unacked - 1}
+            {array:reset(RelSeq,                   SegEntries), Unacked - 1}
     end.
 
 array_new() ->
@@ -1177,12 +1177,12 @@ bool_to_int(false) -> 0.
 segment_plus_journal(SegEntries, JEntries) ->
     array:sparse_foldl(
       fun (RelSeq, JObj, {SegEntriesOut, AdditionalUnacked}) ->
-              SegEntry = maps:get(RelSeq, SegEntriesOut, undefined),
+              SegEntry = array:get(RelSeq, SegEntriesOut),
               {Obj, AdditionalUnackedDelta} =
                   segment_plus_journal1(SegEntry, JObj),
               {case Obj of
-                   undefined -> maps:remove(RelSeq, SegEntriesOut);
-                   _         -> maps:put(RelSeq, Obj, SegEntriesOut)
+                   undefined -> array:reset(RelSeq, SegEntriesOut);
+                   _         -> array:set(RelSeq, Obj, SegEntriesOut)
                end,
                AdditionalUnacked + AdditionalUnackedDelta}
       end, {SegEntries, 0}, JEntries).
@@ -1215,7 +1215,7 @@ segment_plus_journal1({?PUB, del, no_ack},          {no_pub, no_del, ack}) ->
 journal_minus_segment(JEntries, EToSeg, SegEntries) ->
     array:sparse_foldl(
       fun (RelSeq, JObj, {JEntriesOut, EToSegOut, UnackedRemoved}) ->
-              SegEntry = maps:get(RelSeq, SegEntries, undefined),
+              SegEntry = array:get(RelSeq, SegEntries),
               {Obj, UnackedRemovedDelta} =
                   journal_minus_segment1(JObj, SegEntry),
               {JEntriesOut1, EToSegOut1} =
