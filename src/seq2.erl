@@ -10,14 +10,15 @@ ofSparseArrayReversed(Array) ->
     seq:unfold(
       fun (I) ->
               (fun Unfold1(FromIndex) ->
-                       if FromIndex >= 0 ->
+                       if
+                           FromIndex >= 0 ->
                                case array:get(FromIndex, Array) of
                                    Default ->
                                        Unfold1(FromIndex - 1);
                                    Value ->
                                        {{FromIndex, Value}, FromIndex - 1}
                                end;
-                          true ->
+                           true ->
                                undefined
                        end
                end)(I)
