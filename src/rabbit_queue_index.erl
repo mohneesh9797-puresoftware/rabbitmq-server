@@ -221,6 +221,16 @@
 -rabbit_upgrade({store_msg_size, local, [avoid_zeroes]}).
 -rabbit_upgrade({store_msg,      local, [store_msg_size]}).
 
+-type segment_entry() :: {{IsPersistent :: boolean(),
+                           Bin :: binary(),
+                           MsgBin :: binary()},
+                          IsDelivered :: atom(),
+                          IsAcked :: atom()}.
+
+%% Entries are indexed by their RelSeq
+-type segment_entries_index() :: {array:array(segment_entry()),
+                                  UnackedCount :: integer()}.
+
 -type hdl() :: ('undefined' | any()).
 -type segment() :: ('undefined' |
                     #segment { num                :: non_neg_integer(),
@@ -1126,6 +1136,10 @@ load_segment(KeepAcked, #segment { path = Path }) ->
                  Res
     end.
 
+-spec parse_segment_entries(SegBin :: binary(),
+                            KeepAcked :: boolean(),
+                            Empty :: segment_entries_index()) ->
+          segment_entries_index().
 parse_segment_entries(<<?PUB_PREFIX:?PUB_PREFIX_BITS,
                         IsPersistNum:1, RelSeq:?REL_SEQ_BITS, Rest/binary>>,
                       KeepAcked, Acc) ->
