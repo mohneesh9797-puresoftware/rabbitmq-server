@@ -907,7 +907,8 @@ load_journal(State = #qistate { dir = Dir }) ->
                  Size = rabbit_file:file_size(Path),
                  {ok, 0} = file_handle_cache:position(JournalHdl, 0),
                  {ok, JournalBin} = file_handle_cache:read(JournalHdl, Size),
-                 parse_journal_entries(JournalBin, State1);
+                 journal_file:entries_fold(fun add_to_journal/3,
+                                           State1, JournalBin);
         false -> State
     end.
 
@@ -932,31 +933,6 @@ recover_journal(State) ->
                                                     UnackedCountDuplicates) }
           end, Segments),
     State1 #qistate { segments = Segments1 }.
-
-parse_journal_entries(<<?DEL_JPREFIX:?JPREFIX_BITS, SeqId:?SEQ_BITS,
-                        Rest/binary>>, State) ->
-    parse_journal_entries(Rest, add_to_journal(SeqId, del, State));
-
-parse_journal_entries(<<?ACK_JPREFIX:?JPREFIX_BITS, SeqId:?SEQ_BITS,
-                        Rest/binary>>, State) ->
-    parse_journal_entries(Rest, add_to_journal(SeqId, ack, State));
-parse_journal_entries(<<0:?JPREFIX_BITS, 0:?SEQ_BITS,
-                        0:?PUB_RECORD_SIZE_BYTES/unit:8, _/binary>>, State) ->
-    %% Journal entry composed only of zeroes was probably
-    %% produced during a dirty shutdown so stop reading
-    State;
-parse_journal_entries(<<Prefix:?JPREFIX_BITS, SeqId:?SEQ_BITS,
-                        Bin:?PUB_RECORD_BODY_BYTES/binary,
-                        MsgSize:?EMBEDDED_SIZE_BITS, MsgBin:MsgSize/binary,
-                        Rest/binary>>, State) ->
-    IsPersistent = case Prefix of
-                       ?PUB_PERSIST_JPREFIX -> true;
-                       ?PUB_TRANS_JPREFIX   -> false
-                   end,
-    parse_journal_entries(
-      Rest, add_to_journal(SeqId, {IsPersistent, Bin, MsgBin}, State));
-parse_journal_entries(_ErrOrEoF, State) ->
-    State.
 
 deliver_or_ack(_Kind, [], State) ->
     State;
