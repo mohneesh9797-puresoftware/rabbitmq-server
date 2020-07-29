@@ -7,36 +7,11 @@
 
 -module(journal_file).
 
+-include("rabbit_queue_index.hrl").
+
 -export([entries_fold/3]).
 
--define(JOURNAL_FILENAME, "journal.jif").
--define(QUEUE_NAME_STUB_FILE, ".queue_name").
-
--define(PUB_PERSIST_JPREFIX, 2#00).
--define(PUB_TRANS_JPREFIX,   2#01).
--define(DEL_JPREFIX,         2#10).
--define(ACK_JPREFIX,         2#11).
--define(JPREFIX_BITS, 2).
--define(SEQ_BYTES, 8).
--define(SEQ_BITS, ((?SEQ_BYTES * 8) - ?JPREFIX_BITS)).
-
--define(SIZE_BYTES, 4).
-
--define(EMBEDDED_SIZE_BYTES, 4).
--define(EMBEDDED_SIZE_BITS, (?EMBEDDED_SIZE_BYTES * 8)).
-
--define(EXPIRY_BYTES, 8).
-
--define(MSG_ID_BYTES, 16). %% md5sum is 128 bit or 16 bytes
-
-%% 16 bytes for md5sum + 8 for expiry
--define(PUB_RECORD_BODY_BYTES, (?MSG_ID_BYTES + ?EXPIRY_BYTES + ?SIZE_BYTES)).
-%% + 4 for size
--define(PUB_RECORD_SIZE_BYTES, (?PUB_RECORD_BODY_BYTES + ?EMBEDDED_SIZE_BYTES)).
-
--type entry() :: 'del' | 'ack' | {IsPersistent :: boolean(),
-                                  Bin :: binary(),
-                                  MsgBin :: binary()}.
+-type entry() :: 'del' | 'ack' | pub().
 
 -spec entries_fold(Fun :: fun ((<<_:?SEQ_BITS>>, entry(), A) -> A),
                    Acc0 :: A,

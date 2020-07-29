@@ -7,60 +7,15 @@
 
 -module(segment_file).
 
+-include("rabbit_queue_index.hrl").
+
 -export([parse_segment_entries/2]).
-
-%% TODO: The segment size would be configurable, but deriving all the
-%% other values is quite hairy and quite possibly noticeably less
-%% efficient, depending on how clever the compiler is when it comes to
-%% binary generation/matching with constant vs variable lengths.
-
--define(REL_SEQ_BITS, 14).
-%% calculated as trunc(math:pow(2,?REL_SEQ_BITS))).
--define(SEGMENT_ENTRY_COUNT, 16384).
-
-%% seq only is binary 01 followed by 14 bits of rel seq id
-%% (range: 0 - 16383)
--define(REL_SEQ_ONLY_PREFIX, 01).
--define(REL_SEQ_ONLY_PREFIX_BITS, 2).
--define(REL_SEQ_ONLY_RECORD_BYTES, 2).
-
-%% publish record is binary 1 followed by a bit for is_persistent,
-%% then 14 bits of rel seq id, 64 bits for message expiry, 32 bits of
-%% size and then 128 bits of md5sum msg id.
--define(PUB_PREFIX, 1).
--define(PUB_PREFIX_BITS, 1).
-
--define(EXPIRY_BYTES, 8).
--define(EXPIRY_BITS, (?EXPIRY_BYTES * 8)).
--define(NO_EXPIRY, 0).
-
--define(MSG_ID_BYTES, 16). %% md5sum is 128 bit or 16 bytes
--define(MSG_ID_BITS, (?MSG_ID_BYTES * 8)).
-
-%% This is the size of the message body content, for stats
--define(SIZE_BYTES, 4).
--define(SIZE_BITS, (?SIZE_BYTES * 8)).
-
-%% This is the size of the message record embedded in the queue
-%% index. If 0, the message can be found in the message store.
--define(EMBEDDED_SIZE_BYTES, 4).
--define(EMBEDDED_SIZE_BITS, (?EMBEDDED_SIZE_BYTES * 8)).
-
-%% 16 bytes for md5sum + 8 for expiry
--define(PUB_RECORD_BODY_BYTES, (?MSG_ID_BYTES + ?EXPIRY_BYTES + ?SIZE_BYTES)).
-%% + 4 for size
--define(PUB_RECORD_SIZE_BYTES, (?PUB_RECORD_BODY_BYTES + ?EMBEDDED_SIZE_BYTES)).
-
-%% + 2 for seq, bits and prefix
--define(PUB_RECORD_PREFIX_BYTES, 2).
 
 -export_type([segment_entry/0]).
 
--type segment_entry() :: {{IsPersistent :: boolean(),
-                           Bin :: binary(),
-                           MsgBin :: binary()},
-                          IsDelivered :: atom(),
-                          IsAcked :: atom()}.
+-type segment_entry() :: {pub(),
+                          IsDelivered :: 'del' | 'no_del',
+                          IsAcked :: 'ack' | 'no_ack'}.
 
 %% Entries are indexed by their RelSeq
 -spec parse_segment_entries(binary(), boolean()) ->
