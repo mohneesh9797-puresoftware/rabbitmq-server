@@ -77,7 +77,7 @@
 
 -type enumerator() :: {list, non_neg_integer(), list()}.
 
--type seq() :: {seq, enumerator()}.
+-type seq() :: {seq, enumerator() | any()}.
 
 -export_type([seq/0]).
 
