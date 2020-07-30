@@ -9,7 +9,10 @@
 
 -include("rabbit_queue_index.hrl").
 
--export([entries_fold/3]).
+-export([entries_fold/3,
+         store_msg_journal/1,
+         store_msg_size_journal/1,
+         add_queue_ttl_journal/1]).
 
 -type entry() :: 'del' | 'ack' | pub().
 
@@ -38,3 +41,51 @@ entries_fold(Fun, Acc0, <<Prefix:?JPREFIX_BITS, SeqId:?SEQ_BITS,
     entries_fold(Fun, Fun(SeqId, {IsPersistent, Bin, MsgBin}, Acc0), Rest);
 entries_fold(_, Acc0, _ErrOrEoF) ->
   Acc0.
+
+%% An incremental transform on the binary data used during upgrades
+-spec store_msg_journal(binary()) -> {binary(), binary()}.
+store_msg_journal(<<?DEL_JPREFIX:?JPREFIX_BITS, SeqId:?SEQ_BITS,
+                    Rest/binary>>) ->
+    {<<?DEL_JPREFIX:?JPREFIX_BITS, SeqId:?SEQ_BITS>>, Rest};
+store_msg_journal(<<?ACK_JPREFIX:?JPREFIX_BITS, SeqId:?SEQ_BITS,
+                    Rest/binary>>) ->
+    {<<?ACK_JPREFIX:?JPREFIX_BITS, SeqId:?SEQ_BITS>>, Rest};
+store_msg_journal(<<Prefix:?JPREFIX_BITS, SeqId:?SEQ_BITS,
+                    MsgId:?MSG_ID_BITS, Expiry:?EXPIRY_BITS, Size:?SIZE_BITS,
+                    Rest/binary>>) ->
+    {<<Prefix:?JPREFIX_BITS, SeqId:?SEQ_BITS, MsgId:?MSG_ID_BITS,
+       Expiry:?EXPIRY_BITS, Size:?SIZE_BITS,
+       0:?EMBEDDED_SIZE_BITS>>, Rest};
+store_msg_journal(_) ->
+    stop.
+
+%% An incremental transform on the binary data used during upgrades
+-spec store_msg_size_journal(binary()) -> {binary(), binary()}.
+store_msg_size_journal(<<?DEL_JPREFIX:?JPREFIX_BITS, SeqId:?SEQ_BITS,
+                        Rest/binary>>) ->
+    {<<?DEL_JPREFIX:?JPREFIX_BITS, SeqId:?SEQ_BITS>>, Rest};
+store_msg_size_journal(<<?ACK_JPREFIX:?JPREFIX_BITS, SeqId:?SEQ_BITS,
+                        Rest/binary>>) ->
+    {<<?ACK_JPREFIX:?JPREFIX_BITS, SeqId:?SEQ_BITS>>, Rest};
+store_msg_size_journal(<<Prefix:?JPREFIX_BITS, SeqId:?SEQ_BITS,
+                         MsgId:?MSG_ID_BITS, Expiry:?EXPIRY_BITS,
+                         Rest/binary>>) ->
+    {<<Prefix:?JPREFIX_BITS, SeqId:?SEQ_BITS, MsgId:?MSG_ID_BITS,
+       Expiry:?EXPIRY_BITS, 0:?SIZE_BITS>>, Rest};
+store_msg_size_journal(_) ->
+    stop.
+
+%% An incremental transform on the binary data used during upgrades
+-spec add_queue_ttl_journal(binary()) -> {binary(), binary()}.
+add_queue_ttl_journal(<<?DEL_JPREFIX:?JPREFIX_BITS, SeqId:?SEQ_BITS,
+                        Rest/binary>>) ->
+    {<<?DEL_JPREFIX:?JPREFIX_BITS, SeqId:?SEQ_BITS>>, Rest};
+add_queue_ttl_journal(<<?ACK_JPREFIX:?JPREFIX_BITS, SeqId:?SEQ_BITS,
+                        Rest/binary>>) ->
+    {<<?ACK_JPREFIX:?JPREFIX_BITS, SeqId:?SEQ_BITS>>, Rest};
+add_queue_ttl_journal(<<Prefix:?JPREFIX_BITS, SeqId:?SEQ_BITS,
+                        MsgId:?MSG_ID_BYTES/binary, Rest/binary>>) ->
+    {[<<Prefix:?JPREFIX_BITS, SeqId:?SEQ_BITS>>, MsgId,
+      <<?NO_EXPIRY:?EXPIRY_BITS>>], Rest};
+add_queue_ttl_journal(_) ->
+    stop.

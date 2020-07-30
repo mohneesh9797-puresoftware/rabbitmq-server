@@ -1238,48 +1238,11 @@ journal_minus_segment1({no_pub, del, ack},         undefined) ->
 -spec add_queue_ttl() -> 'ok'.
 
 add_queue_ttl() ->
-    foreach_queue_index({fun add_queue_ttl_journal/1,
-                         fun add_queue_ttl_segment/1}).
-
-add_queue_ttl_journal(<<?DEL_JPREFIX:?JPREFIX_BITS, SeqId:?SEQ_BITS,
-                        Rest/binary>>) ->
-    {<<?DEL_JPREFIX:?JPREFIX_BITS, SeqId:?SEQ_BITS>>, Rest};
-add_queue_ttl_journal(<<?ACK_JPREFIX:?JPREFIX_BITS, SeqId:?SEQ_BITS,
-                        Rest/binary>>) ->
-    {<<?ACK_JPREFIX:?JPREFIX_BITS, SeqId:?SEQ_BITS>>, Rest};
-add_queue_ttl_journal(<<Prefix:?JPREFIX_BITS, SeqId:?SEQ_BITS,
-                        MsgId:?MSG_ID_BYTES/binary, Rest/binary>>) ->
-    {[<<Prefix:?JPREFIX_BITS, SeqId:?SEQ_BITS>>, MsgId,
-      expiry_to_binary(undefined)], Rest};
-add_queue_ttl_journal(_) ->
-    stop.
-
-add_queue_ttl_segment(<<?PUB_PREFIX:?PUB_PREFIX_BITS, IsPersistentNum:1,
-                        RelSeq:?REL_SEQ_BITS, MsgId:?MSG_ID_BYTES/binary,
-                        Rest/binary>>) ->
-    {[<<?PUB_PREFIX:?PUB_PREFIX_BITS, IsPersistentNum:1, RelSeq:?REL_SEQ_BITS>>,
-      MsgId, expiry_to_binary(undefined)], Rest};
-add_queue_ttl_segment(<<?REL_SEQ_ONLY_PREFIX:?REL_SEQ_ONLY_PREFIX_BITS,
-                        RelSeq:?REL_SEQ_BITS, Rest/binary>>) ->
-    {<<?REL_SEQ_ONLY_PREFIX:?REL_SEQ_ONLY_PREFIX_BITS, RelSeq:?REL_SEQ_BITS>>,
-     Rest};
-add_queue_ttl_segment(_) ->
-    stop.
+    foreach_queue_index({fun journal_file:add_queue_ttl_journal/1,
+                         fun segment_file:add_queue_ttl_segment/1}).
 
 avoid_zeroes() ->
-    foreach_queue_index({none, fun avoid_zeroes_segment/1}).
-
-avoid_zeroes_segment(<<?PUB_PREFIX:?PUB_PREFIX_BITS,  IsPersistentNum:1,
-                       RelSeq:?REL_SEQ_BITS, MsgId:?MSG_ID_BITS,
-                       Expiry:?EXPIRY_BITS, Rest/binary>>) ->
-    {<<?PUB_PREFIX:?PUB_PREFIX_BITS, IsPersistentNum:1, RelSeq:?REL_SEQ_BITS,
-       MsgId:?MSG_ID_BITS, Expiry:?EXPIRY_BITS>>, Rest};
-avoid_zeroes_segment(<<0:?REL_SEQ_ONLY_PREFIX_BITS,
-                       RelSeq:?REL_SEQ_BITS, Rest/binary>>) ->
-    {<<?REL_SEQ_ONLY_PREFIX:?REL_SEQ_ONLY_PREFIX_BITS, RelSeq:?REL_SEQ_BITS>>,
-     Rest};
-avoid_zeroes_segment(_) ->
-    stop.
+    foreach_queue_index({none, fun segment_file:avoid_zeroes_segment/1}).
 
 %% At upgrade time we just define every message's size as 0 - that
 %% will save us a load of faff with the message store, and means we
@@ -1287,68 +1250,12 @@ avoid_zeroes_segment(_) ->
 %% don't count message bodies from before the migration, but we can
 %% live with that.
 store_msg_size() ->
-    foreach_queue_index({fun store_msg_size_journal/1,
-                         fun store_msg_size_segment/1}).
-
-store_msg_size_journal(<<?DEL_JPREFIX:?JPREFIX_BITS, SeqId:?SEQ_BITS,
-                        Rest/binary>>) ->
-    {<<?DEL_JPREFIX:?JPREFIX_BITS, SeqId:?SEQ_BITS>>, Rest};
-store_msg_size_journal(<<?ACK_JPREFIX:?JPREFIX_BITS, SeqId:?SEQ_BITS,
-                        Rest/binary>>) ->
-    {<<?ACK_JPREFIX:?JPREFIX_BITS, SeqId:?SEQ_BITS>>, Rest};
-store_msg_size_journal(<<Prefix:?JPREFIX_BITS, SeqId:?SEQ_BITS,
-                         MsgId:?MSG_ID_BITS, Expiry:?EXPIRY_BITS,
-                         Rest/binary>>) ->
-    {<<Prefix:?JPREFIX_BITS, SeqId:?SEQ_BITS, MsgId:?MSG_ID_BITS,
-       Expiry:?EXPIRY_BITS, 0:?SIZE_BITS>>, Rest};
-store_msg_size_journal(_) ->
-    stop.
-
-store_msg_size_segment(<<?PUB_PREFIX:?PUB_PREFIX_BITS, IsPersistentNum:1,
-                         RelSeq:?REL_SEQ_BITS, MsgId:?MSG_ID_BITS,
-                         Expiry:?EXPIRY_BITS, Rest/binary>>) ->
-    {<<?PUB_PREFIX:?PUB_PREFIX_BITS, IsPersistentNum:1, RelSeq:?REL_SEQ_BITS,
-       MsgId:?MSG_ID_BITS, Expiry:?EXPIRY_BITS, 0:?SIZE_BITS>>, Rest};
-store_msg_size_segment(<<?REL_SEQ_ONLY_PREFIX:?REL_SEQ_ONLY_PREFIX_BITS,
-                        RelSeq:?REL_SEQ_BITS, Rest/binary>>) ->
-    {<<?REL_SEQ_ONLY_PREFIX:?REL_SEQ_ONLY_PREFIX_BITS, RelSeq:?REL_SEQ_BITS>>,
-     Rest};
-store_msg_size_segment(_) ->
-    stop.
+    foreach_queue_index({fun journal_file:store_msg_size_journal/1,
+                         fun segment_file:store_msg_size_segment/1}).
 
 store_msg() ->
-    foreach_queue_index({fun store_msg_journal/1,
-                         fun store_msg_segment/1}).
-
-store_msg_journal(<<?DEL_JPREFIX:?JPREFIX_BITS, SeqId:?SEQ_BITS,
-                    Rest/binary>>) ->
-    {<<?DEL_JPREFIX:?JPREFIX_BITS, SeqId:?SEQ_BITS>>, Rest};
-store_msg_journal(<<?ACK_JPREFIX:?JPREFIX_BITS, SeqId:?SEQ_BITS,
-                    Rest/binary>>) ->
-    {<<?ACK_JPREFIX:?JPREFIX_BITS, SeqId:?SEQ_BITS>>, Rest};
-store_msg_journal(<<Prefix:?JPREFIX_BITS, SeqId:?SEQ_BITS,
-                    MsgId:?MSG_ID_BITS, Expiry:?EXPIRY_BITS, Size:?SIZE_BITS,
-                    Rest/binary>>) ->
-    {<<Prefix:?JPREFIX_BITS, SeqId:?SEQ_BITS, MsgId:?MSG_ID_BITS,
-       Expiry:?EXPIRY_BITS, Size:?SIZE_BITS,
-       0:?EMBEDDED_SIZE_BITS>>, Rest};
-store_msg_journal(_) ->
-    stop.
-
-store_msg_segment(<<?PUB_PREFIX:?PUB_PREFIX_BITS, IsPersistentNum:1,
-                    RelSeq:?REL_SEQ_BITS, MsgId:?MSG_ID_BITS,
-                    Expiry:?EXPIRY_BITS, Size:?SIZE_BITS, Rest/binary>>) ->
-    {<<?PUB_PREFIX:?PUB_PREFIX_BITS, IsPersistentNum:1, RelSeq:?REL_SEQ_BITS,
-       MsgId:?MSG_ID_BITS, Expiry:?EXPIRY_BITS, Size:?SIZE_BITS,
-       0:?EMBEDDED_SIZE_BITS>>, Rest};
-store_msg_segment(<<?REL_SEQ_ONLY_PREFIX:?REL_SEQ_ONLY_PREFIX_BITS,
-                    RelSeq:?REL_SEQ_BITS, Rest/binary>>) ->
-    {<<?REL_SEQ_ONLY_PREFIX:?REL_SEQ_ONLY_PREFIX_BITS, RelSeq:?REL_SEQ_BITS>>,
-     Rest};
-store_msg_segment(_) ->
-    stop.
-
-
+    foreach_queue_index({fun journal_file:store_msg_journal/1,
+                         fun segment_file:store_msg_segment/1}).
 
 %%----------------------------------------------------------------------------
 %% Migration functions

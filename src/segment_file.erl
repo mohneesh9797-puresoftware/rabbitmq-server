@@ -9,7 +9,11 @@
 
 -include("rabbit_queue_index.hrl").
 
--export([parse_segment_entries/2]).
+-export([parse_segment_entries/2,
+         store_msg_segment/1,
+         store_msg_size_segment/1,
+         add_queue_ttl_segment/1,
+         avoid_zeroes_segment/1]).
 
 -export_type([segment_entry/0]).
 
@@ -24,8 +28,6 @@ parse_segment_entries(SegBin, KeepAcked) ->
     Empty = {array:new([{default, undefined}, fixed, {size, ?SEGMENT_ENTRY_COUNT}]),
              0},
     parse_segment_entries(SegBin, KeepAcked, Empty).
-
-%% Private
 
 parse_segment_entries(<<?PUB_PREFIX:?PUB_PREFIX_BITS,
   IsPersistNum:1, RelSeq:?REL_SEQ_BITS, Rest/binary>>,
@@ -59,3 +61,60 @@ add_segment_relseq_entry(KeepAcked, RelSeq, {SegEntries, Unacked}) ->
     {_Pub, del, no_ack} ->
       {array:reset(RelSeq,                   SegEntries), Unacked - 1}
   end.
+
+%% An incremental transform on the binary data used during upgrades
+-spec store_msg_segment(binary()) -> {binary(), binary()}.
+store_msg_segment(<<?PUB_PREFIX:?PUB_PREFIX_BITS, IsPersistentNum:1,
+                    RelSeq:?REL_SEQ_BITS, MsgId:?MSG_ID_BITS,
+                    Expiry:?EXPIRY_BITS, Size:?SIZE_BITS, Rest/binary>>) ->
+    {<<?PUB_PREFIX:?PUB_PREFIX_BITS, IsPersistentNum:1, RelSeq:?REL_SEQ_BITS,
+       MsgId:?MSG_ID_BITS, Expiry:?EXPIRY_BITS, Size:?SIZE_BITS,
+       0:?EMBEDDED_SIZE_BITS>>, Rest};
+store_msg_segment(<<?REL_SEQ_ONLY_PREFIX:?REL_SEQ_ONLY_PREFIX_BITS,
+                    RelSeq:?REL_SEQ_BITS, Rest/binary>>) ->
+    {<<?REL_SEQ_ONLY_PREFIX:?REL_SEQ_ONLY_PREFIX_BITS, RelSeq:?REL_SEQ_BITS>>,
+     Rest};
+store_msg_segment(_) ->
+    stop.
+
+%% An incremental transform on the binary data used during upgrades
+-spec store_msg_size_segment(binary()) -> {binary(), binary()}.
+store_msg_size_segment(<<?PUB_PREFIX:?PUB_PREFIX_BITS, IsPersistentNum:1,
+                         RelSeq:?REL_SEQ_BITS, MsgId:?MSG_ID_BITS,
+                         Expiry:?EXPIRY_BITS, Rest/binary>>) ->
+    {<<?PUB_PREFIX:?PUB_PREFIX_BITS, IsPersistentNum:1, RelSeq:?REL_SEQ_BITS,
+       MsgId:?MSG_ID_BITS, Expiry:?EXPIRY_BITS, 0:?SIZE_BITS>>, Rest};
+store_msg_size_segment(<<?REL_SEQ_ONLY_PREFIX:?REL_SEQ_ONLY_PREFIX_BITS,
+                        RelSeq:?REL_SEQ_BITS, Rest/binary>>) ->
+    {<<?REL_SEQ_ONLY_PREFIX:?REL_SEQ_ONLY_PREFIX_BITS, RelSeq:?REL_SEQ_BITS>>,
+     Rest};
+store_msg_size_segment(_) ->
+    stop.
+
+%% An incremental transform on the binary data used during upgrades
+-spec add_queue_ttl_segment(binary()) -> {[binary()], binary()}.
+add_queue_ttl_segment(<<?PUB_PREFIX:?PUB_PREFIX_BITS, IsPersistentNum:1,
+                        RelSeq:?REL_SEQ_BITS, MsgId:?MSG_ID_BYTES/binary,
+                        Rest/binary>>) ->
+    {[<<?PUB_PREFIX:?PUB_PREFIX_BITS, IsPersistentNum:1, RelSeq:?REL_SEQ_BITS>>,
+      MsgId, <<?NO_EXPIRY:?EXPIRY_BITS>>], Rest};
+add_queue_ttl_segment(<<?REL_SEQ_ONLY_PREFIX:?REL_SEQ_ONLY_PREFIX_BITS,
+                        RelSeq:?REL_SEQ_BITS, Rest/binary>>) ->
+    {<<?REL_SEQ_ONLY_PREFIX:?REL_SEQ_ONLY_PREFIX_BITS, RelSeq:?REL_SEQ_BITS>>,
+     Rest};
+add_queue_ttl_segment(_) ->
+    stop.
+
+%% An incremental transform on the binary data used during upgrades
+-spec avoid_zeroes_segment(binary()) -> {binary(), binary()}.
+avoid_zeroes_segment(<<?PUB_PREFIX:?PUB_PREFIX_BITS,  IsPersistentNum:1,
+                       RelSeq:?REL_SEQ_BITS, MsgId:?MSG_ID_BITS,
+                       Expiry:?EXPIRY_BITS, Rest/binary>>) ->
+    {<<?PUB_PREFIX:?PUB_PREFIX_BITS, IsPersistentNum:1, RelSeq:?REL_SEQ_BITS,
+       MsgId:?MSG_ID_BITS, Expiry:?EXPIRY_BITS>>, Rest};
+avoid_zeroes_segment(<<0:?REL_SEQ_ONLY_PREFIX_BITS,
+                       RelSeq:?REL_SEQ_BITS, Rest/binary>>) ->
+    {<<?REL_SEQ_ONLY_PREFIX:?REL_SEQ_ONLY_PREFIX_BITS, RelSeq:?REL_SEQ_BITS>>,
+     Rest};
+avoid_zeroes_segment(_) ->
+    stop.
