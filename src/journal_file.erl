@@ -13,7 +13,7 @@
 
 -type entry() :: 'del' | 'ack' | pub().
 
--spec entries_fold(Fun :: fun ((<<_:?SEQ_BITS>>, entry(), A) -> A),
+-spec entries_fold(Fun :: fun ((integer(), entry(), A) -> A),
                    Acc0 :: A,
                    JournalBin :: binary()) -> A.
 entries_fold(Fun, Acc0, <<?DEL_JPREFIX:?JPREFIX_BITS, SeqId:?SEQ_BITS,

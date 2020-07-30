@@ -17,6 +17,7 @@
 
 -export([add_queue_ttl/0, avoid_zeroes/0, store_msg_size/0, store_msg/0]).
 -export([scan_queue_segments/3, scan_queue_segments/4]).
+-export([recover_queue_segments/2]).
 
 %% Migrates from global to per-vhost message stores
 -export([move_to_per_vhost_stores/1,
@@ -681,6 +682,65 @@ scan_queue_segments(Fun, Acc, VHostDir, QueueName) ->
       end, Acc, all_segment_nums(State)),
     {_SegmentCounts, _State} = terminate(State),
     Result.
+
+
+direct_load_journal(State = #qistate { dir = Dir}) ->
+    Path = filename:join(Dir, ?JOURNAL_FILENAME),
+    {ok, JournalBin} = file:read_file(Path),
+    journal_file:entries_fold(fun add_to_journal/3, State, JournalBin).
+
+direct_load_segment(KeepAcked, #segment { path = Path }) ->
+    {ok, SegBin} = file:read_file(Path),
+    segment_file:parse_segment_entries(SegBin, KeepAcked).
+
+direct_recover_journal(State) ->
+    State1 = #qistate { segments = Segments } = direct_load_journal(State),
+    Segments1 =
+        segment_map(
+          fun (Segment = #segment { journal_entries = JEntries,
+                                    entries_to_segment = EToSeg,
+                                    unacked = UnackedCountInJournal }) ->
+                  %% We want to keep ack'd entries in so that we can
+                  %% remove them if duplicates are in the journal. The
+                  %% counts here are purely from the segment itself.
+                  {SegEntries, UnackedCountInSeg} = direct_load_segment(true, Segment),
+                  {JEntries1, EToSeg1, UnackedCountDuplicates} =
+                      journal_minus_segment(JEntries, EToSeg, SegEntries),
+                  Segment #segment { journal_entries = JEntries1,
+                                     entries_to_segment = EToSeg1,
+                                     unacked = (UnackedCountInJournal +
+                                                    UnackedCountInSeg -
+                                                    UnackedCountDuplicates) }
+          end, Segments),
+    State1 #qistate { segments = Segments1 }.
+
+%% -type segment_entry() :: {SeqId :: seq_id(), MsgOrId :: any(), MsgProps :: any(),
+%%                           IsPersistent :: boolean(), IsDelivered :: 'del' | 'no_del',
+%%                           IsAcked :: 'ack' | 'no_ack'}.
+
+%% Read the queue segments, to the extent possible, and combine with
+%% the journal, and then emit the entries, without using the file_handle_cache.
+%% In reality this function can be implemented in salvage, but let's see what
+%% that would mean exposing instead.
+%%
+%% returns a seq of segment_entry()
+-spec recover_queue_segments(file:filename_all(), rabbit_amqqueue:name()) ->
+          seq:seq().
+recover_queue_segments(VHostDir, QueueName) ->
+    State = #qistate { segments = Segments, dir = Dir } =
+        direct_recover_journal(blank_state(VHostDir, QueueName)),
+    seq:collect(
+      fun (Seg) ->
+              Segment = #segment { journal_entries = JEntries } =
+                  segment_find_or_new(Seg, Dir, Segments),
+              {SegEntries, _UnackedCount} = direct_load_segment(false, Segment),
+              {SegEntries1, _UnackedCountD} = segment_plus_journal(SegEntries, JEntries),
+              seq:map(fun ({RelSeq, {{IsPersistent, Bin, MsgBin}, Del, Ack}}) ->
+                              {MsgOrId, MsgProps} = parse_pub_record_body(Bin, MsgBin),
+                              {reconstruct_seq_id(Seg, RelSeq), MsgOrId, MsgProps,
+                               IsPersistent, Del, Ack}
+                      end, seq2:ofSparseArrayReversed(SegEntries1))
+      end, seq:ofList(lists:reverse(all_segment_nums(State)))).
 
 %%----------------------------------------------------------------------------
 %% expiry/binary manipulation
