@@ -7,9 +7,11 @@
 
 -module(segment_file).
 
+-include("rabbit.hrl").
 -include("rabbit_queue_index.hrl").
 
 -export([parse_segment_entries/2,
+         parse_pub_record_body/2,
          store_msg_segment/1,
          store_msg_size_segment/1,
          add_queue_ttl_segment/1,
@@ -61,6 +63,25 @@ add_segment_relseq_entry(KeepAcked, RelSeq, {SegEntries, Unacked}) ->
     {_Pub, del, no_ack} ->
       {array:reset(RelSeq,                   SegEntries), Unacked - 1}
   end.
+
+% This mirrors the encoding performed by journal_file:encode_pub_record_body/2
+-spec parse_pub_record_body(Bin :: binary(), MsgBin :: binary()) ->
+          {rabbit_types:msg_id(), rabbit_types:message_properties()}.
+parse_pub_record_body(<<MsgIdNum:?MSG_ID_BITS, Expiry:?EXPIRY_BITS,
+                        Size:?SIZE_BITS>>, MsgBin) ->
+    %% work around for binary data fragmentation. See
+    %% rabbit_msg_file:read_next/2
+    <<MsgId:?MSG_ID_BYTES/binary>> = <<MsgIdNum:?MSG_ID_BITS>>,
+    Props = #message_properties{expiry = case Expiry of
+                                             ?NO_EXPIRY -> undefined;
+                                             X          -> X
+                                         end,
+                                size   = Size},
+    case MsgBin of
+        <<>> -> {MsgId, Props};
+        _    -> Msg = #basic_message{id = MsgId} = binary_to_term(MsgBin),
+                {Msg, Props}
+    end.
 
 %% An incremental transform on the binary data used during upgrades
 -spec store_msg_segment(binary()) -> {binary(), binary()}.

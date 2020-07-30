@@ -7,14 +7,44 @@
 
 -module(journal_file).
 
+-include("rabbit.hrl").
 -include("rabbit_queue_index.hrl").
 
--export([entries_fold/3,
+-export([encode_pub_record_body/2,
+         encode_entry/2,
+         entries_fold/3,
          store_msg_journal/1,
          store_msg_size_journal/1,
          add_queue_ttl_journal/1]).
 
 -type entry() :: 'del' | 'ack' | pub().
+
+% This mirrors the parsing performed by segment_file:parse_pub_record_body/2
+-spec encode_pub_record_body(rabbit_types:msg_id(),
+                             rabbit_types:message_properties()) ->
+          {binary(), binary()}.
+encode_pub_record_body(MsgOrId, #message_properties { expiry = Expiry,
+                                                      size   = Size }) ->
+    ExpiryBin = expiry_to_binary(Expiry),
+    case MsgOrId of
+        MsgId when is_binary(MsgId) ->
+            {<<MsgId/binary, ExpiryBin/binary, Size:?SIZE_BITS>>, <<>>};
+        #basic_message{id = MsgId} ->
+            MsgBin = term_to_binary(MsgOrId),
+            {<<MsgId/binary, ExpiryBin/binary, Size:?SIZE_BITS>>, MsgBin}
+    end.
+
+expiry_to_binary(undefined) -> <<?NO_EXPIRY:?EXPIRY_BITS>>;
+expiry_to_binary(Expiry)    -> <<Expiry:?EXPIRY_BITS>>.
+
+-spec encode_entry(integer(), pub()) -> iodata().
+encode_entry(SeqId, {IsPersistent, Bin, MsgBin}) ->
+    [<<(case IsPersistent of
+            true  -> ?PUB_PERSIST_JPREFIX;
+            false -> ?PUB_TRANS_JPREFIX
+        end):?JPREFIX_BITS,
+       SeqId:?SEQ_BITS, Bin/binary,
+       (size(MsgBin)):?EMBEDDED_SIZE_BITS>>, MsgBin].
 
 -spec entries_fold(Fun :: fun ((integer(), entry(), A) -> A),
                    Acc0 :: A,

@@ -262,15 +262,10 @@ pre_publish(MsgOrId, SeqId, MsgProps, IsPersistent, IsDelivered, JournalSizeHint
                              delivered_cache   = DC}) ->
     State1 = maybe_needs_confirming(MsgProps, MsgOrId, State),
 
-    {Bin, MsgBin} = create_pub_record_body(MsgOrId, MsgProps),
+    {Bin, MsgBin} = journal_file:encode_pub_record_body(MsgOrId, MsgProps),
 
     PPC1 =
-        [[<<(case IsPersistent of
-                true  -> ?PUB_PERSIST_JPREFIX;
-                false -> ?PUB_TRANS_JPREFIX
-            end):?JPREFIX_BITS,
-           SeqId:?SEQ_BITS, Bin/binary,
-           (size(MsgBin)):?EMBEDDED_SIZE_BITS>>, MsgBin] | PPC],
+        [journal_file:encode_entry(SeqId, {IsPersistent, Bin, MsgBin}) | PPC],
 
     DC1 =
         case IsDelivered of
@@ -323,14 +318,9 @@ publish(MsgOrId, SeqId, MsgProps, IsPersistent, JournalSizeHint, State) ->
         get_journal_handle(
           maybe_needs_confirming(MsgProps, MsgOrId, State)),
     file_handle_cache_stats:update(queue_index_journal_write),
-    {Bin, MsgBin} = create_pub_record_body(MsgOrId, MsgProps),
+    {Bin, MsgBin} = journal_file:encode_pub_record_body(MsgOrId, MsgProps),
     ok = file_handle_cache:append(
-           JournalHdl, [<<(case IsPersistent of
-                               true  -> ?PUB_PERSIST_JPREFIX;
-                               false -> ?PUB_TRANS_JPREFIX
-                           end):?JPREFIX_BITS,
-                          SeqId:?SEQ_BITS, Bin/binary,
-                          (size(MsgBin)):?EMBEDDED_SIZE_BITS>>, MsgBin]),
+           JournalHdl, journal_file:encode_entry(SeqId, {IsPersistent, Bin, MsgBin})),
     maybe_flush_journal(
       JournalSizeHint,
       add_to_journal(SeqId, {IsPersistent, Bin, MsgBin}, State1)).
@@ -602,7 +592,7 @@ recover_segment(ContainsCheckFun, CleanShutdown,
     array:sparse_foldl(
       fun (RelSeq, {{IsPersistent, Bin, MsgBin}, Del, no_ack},
            {SegmentAndDirtyCount, Bytes}) ->
-              {MsgOrId, MsgProps} = parse_pub_record_body(Bin, MsgBin),
+              {MsgOrId, MsgProps} = segment_file:parse_pub_record_body(Bin, MsgBin),
               {recover_message(ContainsCheckFun(MsgOrId), CleanShutdown,
                                Del, RelSeq, SegmentAndDirtyCount, MaxJournal),
                Bytes + case IsPersistent of
@@ -736,45 +726,11 @@ recover_queue_segments(VHostDir, QueueName) ->
               {SegEntries, _UnackedCount} = direct_load_segment(false, Segment),
               {SegEntries1, _UnackedCountD} = segment_plus_journal(SegEntries, JEntries),
               seq:map(fun ({RelSeq, {{IsPersistent, Bin, MsgBin}, Del, Ack}}) ->
-                              {MsgOrId, MsgProps} = parse_pub_record_body(Bin, MsgBin),
+                              {MsgOrId, MsgProps} = segment_file:parse_pub_record_body(Bin, MsgBin),
                               {reconstruct_seq_id(Seg, RelSeq), MsgOrId, MsgProps,
                                IsPersistent, Del, Ack}
                       end, seq2:ofSparseArrayReversed(SegEntries1))
       end, seq:ofList(lists:reverse(all_segment_nums(State)))).
-
-%%----------------------------------------------------------------------------
-%% expiry/binary manipulation
-%%----------------------------------------------------------------------------
-
-create_pub_record_body(MsgOrId, #message_properties { expiry = Expiry,
-                                                      size   = Size }) ->
-    ExpiryBin = expiry_to_binary(Expiry),
-    case MsgOrId of
-        MsgId when is_binary(MsgId) ->
-            {<<MsgId/binary, ExpiryBin/binary, Size:?SIZE_BITS>>, <<>>};
-        #basic_message{id = MsgId} ->
-            MsgBin = term_to_binary(MsgOrId),
-            {<<MsgId/binary, ExpiryBin/binary, Size:?SIZE_BITS>>, MsgBin}
-    end.
-
-expiry_to_binary(undefined) -> <<?NO_EXPIRY:?EXPIRY_BITS>>;
-expiry_to_binary(Expiry)    -> <<Expiry:?EXPIRY_BITS>>.
-
-parse_pub_record_body(<<MsgIdNum:?MSG_ID_BITS, Expiry:?EXPIRY_BITS,
-                        Size:?SIZE_BITS>>, MsgBin) ->
-    %% work around for binary data fragmentation. See
-    %% rabbit_msg_file:read_next/2
-    <<MsgId:?MSG_ID_BYTES/binary>> = <<MsgIdNum:?MSG_ID_BITS>>,
-    Props = #message_properties{expiry = case Expiry of
-                                             ?NO_EXPIRY -> undefined;
-                                             X          -> X
-                                         end,
-                                size   = Size},
-    case MsgBin of
-        <<>> -> {MsgId, Props};
-        _    -> Msg = #basic_message{id = MsgId} = binary_to_term(MsgBin),
-                {Msg, Props}
-    end.
 
 %%----------------------------------------------------------------------------
 %% journal manipulation
@@ -1076,7 +1032,7 @@ segment_entries_foldr(Fun, Init,
     {SegEntries1, _UnackedCountD} = segment_plus_journal(SegEntries, JEntries),
     array:sparse_foldr(
       fun (RelSeq, {{IsPersistent, Bin, MsgBin}, Del, Ack}, Acc) ->
-              {MsgOrId, MsgProps} = parse_pub_record_body(Bin, MsgBin),
+              {MsgOrId, MsgProps} = segment_file:parse_pub_record_body(Bin, MsgBin),
               Fun(RelSeq, {{MsgOrId, MsgProps, IsPersistent}, Del, Ack}, Acc)
       end, Init, SegEntries1).
 
