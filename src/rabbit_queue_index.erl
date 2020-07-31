@@ -17,7 +17,10 @@
 
 -export([add_queue_ttl/0, avoid_zeroes/0, store_msg_size/0, store_msg/0]).
 -export([scan_queue_segments/3, scan_queue_segments/4]).
--export([recover_queue_segments/2]).
+-export([queue_dir/2,
+         all_segment_nums/2,
+         direct_recover_journal/2,
+         direct_load_segment_settling_journal/3]).
 
 %% Migrates from global to per-vhost message stores
 -export([move_to_per_vhost_stores/1,
@@ -167,7 +170,13 @@
                                unacked            :: non_neg_integer()
                              }).
 -type seq_id() :: integer().
--type seg_map() :: {map(), [segment()]}.
+-type seg_map() :: {#{non_neg_integer() => segment()}, [segment()]}.
+-type segment_entry() :: {SeqId :: seq_id(),
+                          MsgOrId :: rabbit_types:message() | rabbit_types:msg_id(),
+                          MsgProps :: rabbit_types:message_properties(),
+                          IsPersistent :: boolean(),
+                          IsDelivered :: 'del' | 'no_del',
+                          IsAcked :: 'ack' | 'no_ack'}.
 -type on_sync_fun() :: fun ((gb_sets:set()) -> ok).
 -type qistate() :: #qistate { dir                 :: file:filename(),
                               segments            :: 'undefined' | seg_map(),
@@ -674,7 +683,8 @@ scan_queue_segments(Fun, Acc, VHostDir, QueueName) ->
     Result.
 
 
-direct_load_journal(State = #qistate { dir = Dir}) ->
+direct_load_journal(VHostDir, QueueName) ->
+    State = #qistate { dir = Dir} = blank_state(VHostDir, QueueName),
     Path = filename:join(Dir, ?JOURNAL_FILENAME),
     {ok, JournalBin} = file:read_file(Path),
     journal_file:entries_fold(fun add_to_journal/3, State, JournalBin).
@@ -683,30 +693,47 @@ direct_load_segment(KeepAcked, #segment { path = Path }) ->
     {ok, SegBin} = file:read_file(Path),
     segment_file:parse_segment_entries(SegBin, KeepAcked).
 
-direct_recover_journal(State) ->
-    State1 = #qistate { segments = Segments } = direct_load_journal(State),
-    Segments1 =
-        segment_map(
-          fun (Segment = #segment { journal_entries = JEntries,
-                                    entries_to_segment = EToSeg,
-                                    unacked = UnackedCountInJournal }) ->
-                  %% We want to keep ack'd entries in so that we can
-                  %% remove them if duplicates are in the journal. The
-                  %% counts here are purely from the segment itself.
-                  {SegEntries, UnackedCountInSeg} = direct_load_segment(true, Segment),
-                  {JEntries1, EToSeg1, UnackedCountDuplicates} =
-                      journal_minus_segment(JEntries, EToSeg, SegEntries),
-                  Segment #segment { journal_entries = JEntries1,
-                                     entries_to_segment = EToSeg1,
-                                     unacked = (UnackedCountInJournal +
-                                                    UnackedCountInSeg -
-                                                    UnackedCountDuplicates) }
-          end, Segments),
-    State1 #qistate { segments = Segments1 }.
+-spec direct_recover_journal(file:filename_all(), rabbit_amqqueue:name()) ->
+          seg_map().
+direct_recover_journal(VHostDir, QueueName) ->
+    #qistate { segments = Segments } = direct_load_journal(VHostDir, QueueName),
+    % However, direct_load_journal calls add_to_journal/3, which will
+    % end up calling segment_find_or_new for each Seg (segment number)
+    % Of the state, add_to_journal uses dirty_count, segments, and Dir,
+    % so this function does not require the whole state record. We might
+    % never use the dirty_count in this recovery code path.
+    segment_map(
+      fun (Segment = #segment { journal_entries = JEntries,
+                                entries_to_segment = EToSeg,
+                                unacked = UnackedCountInJournal }) ->
+              %% We want to keep ack'd entries in so that we can
+              %% remove them if duplicates are in the journal. The
+              %% counts here are purely from the segment itself.
+              {SegEntries, UnackedCountInSeg} = direct_load_segment(true, Segment),
+              {JEntries1, EToSeg1, UnackedCountDuplicates} =
+                  journal_minus_segment(JEntries, EToSeg, SegEntries),
+              Segment #segment { journal_entries = JEntries1,
+                                 entries_to_segment = EToSeg1,
+                                 unacked = (UnackedCountInJournal +
+                                                UnackedCountInSeg -
+                                                UnackedCountDuplicates) }
+      end, Segments).
 
-%% -type segment_entry() :: {SeqId :: seq_id(), MsgOrId :: any(), MsgProps :: any(),
-%%                           IsPersistent :: boolean(), IsDelivered :: 'del' | 'no_del',
-%%                           IsAcked :: 'ack' | 'no_ack'}.
+-spec direct_load_segment_settling_journal(non_neg_integer(),
+                                           file:filename_all(),
+                                           seg_map()) ->
+          [segment_entry()].
+direct_load_segment_settling_journal(Seg, Dir, Segments) ->
+    Segment = #segment { journal_entries = JEntries } =
+        segment_find_or_new(Seg, Dir, Segments),
+    {SegEntries, _UnackedCount} = direct_load_segment(false, Segment),
+    {SegEntries1, _UnackedCountD} = segment_plus_journal(SegEntries, JEntries),
+    array:sparse_foldl(
+      fun (RelSeq, {{IsPersistent, Bin, MsgBin}, Del, Ack}, Acc) ->
+              {MsgOrId, MsgProps} = segment_file:parse_pub_record_body(Bin, MsgBin),
+              SeqId = reconstruct_seq_id(Seg, RelSeq),
+              [{SeqId, MsgOrId, MsgProps, IsPersistent, Del, Ack} | Acc]
+      end, [], SegEntries1).
 
 %% Read the queue segments, to the extent possible, and combine with
 %% the journal, and then emit the entries, without using the file_handle_cache.
@@ -714,23 +741,20 @@ direct_recover_journal(State) ->
 %% that would mean exposing instead.
 %%
 %% returns a seq of segment_entry()
--spec recover_queue_segments(file:filename_all(), rabbit_amqqueue:name()) ->
-          seq:seq().
-recover_queue_segments(VHostDir, QueueName) ->
-    State = #qistate { segments = Segments, dir = Dir } =
-        direct_recover_journal(blank_state(VHostDir, QueueName)),
-    seq:collect(
-      fun (Seg) ->
-              Segment = #segment { journal_entries = JEntries } =
-                  segment_find_or_new(Seg, Dir, Segments),
-              {SegEntries, _UnackedCount} = direct_load_segment(false, Segment),
-              {SegEntries1, _UnackedCountD} = segment_plus_journal(SegEntries, JEntries),
-              seq:map(fun ({RelSeq, {{IsPersistent, Bin, MsgBin}, Del, Ack}}) ->
-                              {MsgOrId, MsgProps} = segment_file:parse_pub_record_body(Bin, MsgBin),
-                              {reconstruct_seq_id(Seg, RelSeq), MsgOrId, MsgProps,
-                               IsPersistent, Del, Ack}
-                      end, seq2:ofSparseArrayReversed(SegEntries1))
-      end, seq:ofList(lists:reverse(all_segment_nums(State)))).
+%% -spec recover_queue_segments(file:filename_all(), rabbit_amqqueue:name()) ->
+%%           seq:seq().
+%% recover_queue_segments(VHostDir, QueueName) ->
+%%     Dir = queue_dir(VHostDir, QueueName),
+%%     Segments = direct_recover_journal(VHostDir, QueueName),
+%%     seq:collect(
+%%       fun (Seg) ->
+%%               SegEntries = direct_load_segment_settling_journal(Seg, Dir, Segments),
+%%               seq:map(fun ({RelSeq, {{IsPersistent, Bin, MsgBin}, Del, Ack}}) ->
+%%                               {MsgOrId, MsgProps} = segment_file:parse_pub_record_body(Bin, MsgBin),
+%%                               {reconstruct_seq_id(Seg, RelSeq), MsgOrId, MsgProps,
+%%                                IsPersistent, Del, Ack}
+%%                       end, seq2:ofSparseArrayReversed(SegEntries))
+%%       end, seq:ofList(lists:reverse(all_segment_nums(Dir, Segments)))).
 
 %%----------------------------------------------------------------------------
 %% journal manipulation
@@ -925,6 +949,9 @@ reconstruct_seq_id(Seg, RelSeq) ->
     (Seg * ?SEGMENT_ENTRY_COUNT) + RelSeq.
 
 all_segment_nums(#qistate { dir = Dir, segments = Segments }) ->
+    all_segment_nums(Dir, Segments).
+
+all_segment_nums(Dir, Segments) ->
     lists:sort(
       sets:to_list(
         lists:foldl(
