@@ -1,4 +1,5 @@
 # vim:sw=2:et:
+
 os: linux
 dist: xenial
 language: elixir
@@ -23,25 +24,11 @@ env:
     # appropriate branch for dependencies.
     - base_rmq_ref=master
 
-jobs:
-    - arch: amd64
-      elixir: '1.9'
-      otp_release: '21.3'
-    
-    - arch: amd64
-      elixir: '1.9'
-      otp_release: '22.2'
-      
-    - arch: arm64
-      elixir: '1.9'
-      otp_release: '21.2.3'
-      
-    - arch: arm64
-      elixir: '1.9'
-      otp_release: '22.0.5'
-  
-  
-
+elixir:
+  - '1.9'
+otp_release:
+  - '21.3'
+  - '22.2'
 
 install:
   # This project being an Erlang one (we just set language to Elixir
