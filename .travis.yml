@@ -35,7 +35,7 @@ jobs:
     - arch: arm64
       dist: focal
       elixir: '1.9'
-      otp_release: '22.0.5'
+      otp_release: '22.3'
 
 install:
   # This project being an Erlang one (we just set language to Elixir
