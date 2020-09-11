@@ -33,6 +33,7 @@ otp_release:
   - '22.2'
 jobs:
     - arch: arm64
+      dist: bionic
       elixir: '1.9'
       otp_release: '22.0.5'
 
