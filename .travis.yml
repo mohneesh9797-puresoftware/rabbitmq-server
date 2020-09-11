@@ -1,5 +1,7 @@
 # vim:sw=2:et:
-
+arch:
+    - amd64
+    - arm64
 os: linux
 dist: xenial
 language: elixir
